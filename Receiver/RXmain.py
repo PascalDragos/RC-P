@@ -14,7 +14,7 @@ i = 0
 print('Incepem bucla de receptie..')
 time.sleep(1)
 
-tahoe_congestion_control(sock, address_port_TX, buffer_size, 25)
+tahoe_congestion_control(sock, address_port_TX, buffer_size, 2)
 
 #file_write.close()
 time.sleep(1)
