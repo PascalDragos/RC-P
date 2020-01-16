@@ -1,4 +1,4 @@
-DEFAULT_SIZE = 512
+MSS = 512
 ack = 0     # primul segment_number trimis este 1
 end_transmission = False
 
@@ -23,7 +23,7 @@ def segment_decode(segment):
 
 def increment_ack():
     global ack
-    ack = ack + 1
+    ack = (ack + 1) % 65000
 
 
 # codificare: (segment_number, segment_type, segment_len), segment_data
@@ -52,7 +52,7 @@ def encode_data(segment_data):
 
     segment_type = b'\x02'
 
-    segment_len = DEFAULT_SIZE.to_bytes(2, byteorder='big', signed=False)
+    segment_len = MSS.to_bytes(2, byteorder='big', signed=False)
 
     segment = segment_number + segment_type + segment_len + segment_data
     return segment
@@ -66,7 +66,7 @@ def encode_end(segment_data):
     segment_number = ack.to_bytes(4, byteorder='big', signed=False)
     segment_type = b'\x03'
     segment_data_len = len(segment_data)
-    segment_data = segment_data + b'\x00'*(DEFAULT_SIZE - segment_data_len)
+    segment_data = segment_data + b'\x00'*(MSS - segment_data_len)
     segment_len = segment_data_len.to_bytes(2, byteorder='big', signed=False)
     segment = segment_number + segment_type + segment_len + segment_data
     #  end_transmission = True
@@ -90,7 +90,7 @@ def encode(tip, data):
 
 
 #citirea fisier ca pachete de octeti
-def bytes_from_file(filename, chunk_size=DEFAULT_SIZE):
+def bytes_from_file(filename, chunk_size=MSS):
     with open(filename, "rb") as f:
         while True:
             chunk = f.read(chunk_size)
@@ -103,7 +103,7 @@ def bytes_from_file(filename, chunk_size=DEFAULT_SIZE):
 #codificarea pachetelor de octeti
 def encode_bytes(filename):
     for b in bytes_from_file(filename):
-        if len(b) == DEFAULT_SIZE:
+        if len(b) == MSS:
             yield encode('DATA', b)
         else:
             yield encode('END', b)

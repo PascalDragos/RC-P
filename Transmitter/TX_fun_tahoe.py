@@ -1,35 +1,26 @@
 import threading
-import os
 import time
-from threading import Lock,RLock
+from threading import Lock
 from TX_fun_encode import *
 
-BUFFER_SIZE = DEFAULT_SIZE + 8  # 4 segment_number, 1 tip, 2 lungime
+
+BUFFER_SIZE = MSS + 8  # 4 segment_number, 1 tip, 2 lungime
 TIME_TO_WAIT = 0.8  # Round Trip Time
 cwnd = 2  # congestion window pleaca de la 2, pentru ca pentru cwnd 1 am functia recvfrom care e blocanta
 sstresh = 30  # slow start threshhold
+
 timers_queue = []
 lock = Lock()
-pack_ack_to_retransmit = 0
+
 segments_in_pipe = 0
 sending_done = False
+
 last_ack_of_file = 0
+last_ack_of_file_final = 0
+flag_retransmit = False
+
 last_segment_transmitted = 2
 last_ack_received = 1
-flag_retransmit = False
-retransmit_thread = threading.Thread()
-number_ack_duplicate = 0
-last_ack_of_file_final = 0
-console_lock = RLock()
-
-def ConsoleAppendText(window,text,type):
-    print(text + "\n")
-    if type == 0:
-        console_lock.acquire()
-        window.CONSOLE.append(text + "\n")
-        window.CONSOLE.update()
-        console_lock.release()
-        time.sleep(0.05)
 
 
 def packet_received():
@@ -39,13 +30,13 @@ def packet_received():
 
     lock.acquire()
     if cwnd < sstresh:
-        cwnd = cwnd + cwnd
-    else:
         cwnd = cwnd + 1
+    else:
+        cwnd = cwnd + 1 / cwnd
     lock.release()
 
 
-def packet_dropped(sock,address_port):
+def packet_dropped():
     global cwnd
     global sstresh
     global lock
@@ -58,211 +49,44 @@ def packet_dropped(sock,address_port):
     lock.release()
 
 
-'''
-def pack_retransmit(sock,address_port):
-    global segment_pipe
-    global timers_queue
-    global flag_retransmit
-    global segments_in_pipe
 
-    if(flag_retransmit == False):
-        flag_retransmit = True
-        while len(timers_queue) > 0:
-            lock.acquire()
-            timer = timers_queue.pop(0)
-            lock.release()
-
-            timer.cancel()
-
-        segments_in_pipe = 0
-        time.sleep(2)
-
-
-        print('retransmit')
-        first_loop = True
-        print(f"intiail len = {len(segment_pipe)}")
-
-        #segment_pipe = segment_pipe[1:] # nu se include primul deoarece este ultimul packet receptionat cu succes
-        while len(segment_pipe) > 0:
-            segment = segment_pipe.pop(0)
-            print(f"while1 len = {len(segment_pipe)}")
-            if first_loop == False and int(segment_decode(segment)['ack']) == last_ack_received + 1:
-                segment_pipe.append(segment)
-                break
-            lock.acquire()
-            segments_in_pipe = segments_in_pipe + 1
-            lock.release()
-
-            timer = threading.Timer(TIME_TO_WAIT, lambda : packet_dropped(sock,address_port), args=None, kwargs=None)
-            timer.start()
-
-            lock.acquire()
-            timers_queue.append(timer)
-            lock.release()
-
-            sock.sendto(segment, address_port)
-            segment_number = segment_decode(segment)['ack']
-            print(f'RTX: Am trimis pachetul cu segment_number = {segment_number}')
-            #segment_pipe.append(segment)
-            first_loop = False
-            print(f"while2 len = {len(segment_pipe)}")
-        flag_retransmit = False
-        print('gata retransmisia')
-
-def TX_read_ack(sock,address_port):
-    global timers_queue
-    global segments_in_pipe
-    global lock
-    global sending_done
+def tahoe_congestion_control(sock, address_port, file_name_to_send):
     global last_ack_of_file
-    global pack_ack_to_retransmit
-    global last_ack_received
-    global segment_pipe
-    global number_ack_duplicate
-    global flag_retransmit
-    global retransmit_thread
-
-    print("TX_read_ack thread started")
-
-    number_ack_duplicate = 0
-    last_ack_received += 1  # ack = 2 este pentru pachetul de start (are segment number = 1)
-    # mai trebuie sa merg niste iteratii cand sending_done, abia am trimis pachetul end, nu am primit ack de la el
-    while sending_done == False or (last_ack_received != last_ack_of_file + 1):
-        data, addr = sock.recvfrom(DEFAULT_SIZE)  # functie blocanta
-        ack_received = int.from_bytes(data, byteorder='big', signed=False)   # segment_number este fix data
-        #print('last ack received=  {}...'.format(last_ack_received))
-        #print('A fost receptionat segment_number = {}... \n'.format(ack_received))
-
-        lock.acquire()
-        segments_in_pipe = segments_in_pipe - 1
-        lock.release()
-
-        print(f"RX: ack received : last_ack_received {ack_received}  {last_ack_received}")
-        if ack_received == last_ack_received + 1:  # am primit un ack bun
-            last_ack_received += 1
-            lock.acquire()
-            timer = timers_queue.pop(0)
-            lock.release()
-
-            timer.cancel()
-            if (flag_retransmit == False):
-                segment = segment_pipe.pop(0)
-                segment_number = segment_decode(segment)['ack']
-                print(f'RX:Pop segment_number = {segment_number}')
-
-            packet_received()
-
-        else:   # am primit acelasi ack
-            print('--RX: Ack primit este duplicat...')
-            number_ack_duplicate = number_ack_duplicate + 1
-            if 3 == number_ack_duplicate:
-                print(f'--- 3 ack duplicate!!! flag_retransmit = {flag_retransmit}')
-                number_ack_duplicate = 0
-                if(flag_retransmit == False):
-                    packet_dropped(sock, address_port)
-
-
-    sending_done = False
-    print('TX_RX_done')
-
-def TX_send(sock, address_port, file_name_to_send):
-    global timers_queue
-    global segments_in_pipe
-    global lock
-    global sending_done
-    global last_ack_of_file
-    global segment_pipe
-    global number_ack_duplicate
-    global flag_retransmit
-    global retransmit_thread
-
-    print(f"TX_send thread started sending_done = {sending_done}")
-    while sending_done == False:
-        for segment in encode_bytes(file_name_to_send):
-            # daca pipe-ul e plin
-
-            # de implementat: porneste un TIMER sa nu astepte la infinit
-
-            while segments_in_pipe >= cwnd:
-                print ("TX: pipeline is full")
-                time.sleep(0.5)
-           # while retransmit_thread.is_alive() == True:
-            #    retransmit_thread.join()
-
-
-                #time.sleep(0.5)
-                #asteapta un ack
-            # else
-            #   increamenteaza contor si trimite
-
-            tip = segment_decode(segment)['tip']
-            if tip == 3:
-                sending_done = True
-                last_ack_of_file = segment_decode(segment)['ack']
-                print(f'TX: last_ack_of_file = {last_ack_of_file }\n')
-
-            lock.acquire()
-            segments_in_pipe = segments_in_pipe + 1
-            lock.release()
-
-            # creez si pornesc timer
-
-            while (flag_retransmit == True):
-                print("TX: astept sa se termine retransmisia")
-                time.sleep(0.5)
-
-            timer = threading.Timer(TIME_TO_WAIT, lambda : packet_dropped(sock,address_port), args=None, kwargs=None)
-            timer.start()
-
-            lock.acquire()
-            timers_queue.append(timer)
-            lock.release()
-
-            segment_pipe.append(segment)
-            sock.sendto(segment, address_port)
-
-            segment_number = segment_decode(segment)['ack']
-            print(f'TX:Sent segment_number = {segment_number}')
-
-
-
-            # adaug timerul in coada de timere
-'''
-
-
-def tahoe_congestion_control(window,sock, address_port, file_name_to_send):
-    global last_ack_of_file
-
-    ConsoleAppendText(window,'Trimitem pachetul de start...',0)
+    global last_ack_of_file_final
+    print('Trimitem pachetul de start...')
     time.sleep(0.2)
 
     segment = encode('START', file_name_to_send)
     ack_binary = bytearray([segment[i] for i in range(4)])
     segment_number_sent = int.from_bytes(ack_binary, byteorder='big', signed=False)
 
+    timer_start = threading.Timer(TIME_TO_WAIT, lambda:  sock.sendto(segment, address_port))
+    timer_start2 = threading.Timer(TIME_TO_WAIT + 1, lambda:  sock.sendto(segment, address_port))
     sock.sendto(segment, address_port)
 
-    timer_start = threading.Timer(TIME_TO_WAIT, lambda : sock.sendto(segment, address_port), args=None, kwargs=None)
     timer_start.start()
+    timer_start2.start()
 
-    ConsoleAppendText(window,'A fost trimis pachetul de start, astept confirmarea primirii...',1)
 
-    data, addr = sock.recvfrom(BUFFER_SIZE) # functie blocanta
+    print('A fost trimis pachetul de start, astept confirmarea primirii...')
+
+    data, addr = sock.recvfrom(BUFFER_SIZE)  # functie blocanta
 
     timer_start.cancel()
+    timer_start2.cancel()
 
     ack_binary = bytearray([data[i] for i in range(4)])
     segment_number_received = int.from_bytes(ack_binary, byteorder='big', signed=False)
     if segment_number_received == (segment_number_sent + 1):
-        ConsoleAppendText(window,'Am primit ack pentru pachetul de START\n',0)
+        print('Am primit ack pentru pachetul de START\n')
         # s-a creat fisierul la destinatie, pot incepe popularea acestuia cu informatii
 
         # creez thread pentru primirea confirmarilor pachetelor
-        TX_RX_thread = threading.Thread(target=TX_RX_fun, args=(window,sock,address_port))
+        TX_RX_thread = threading.Thread(target=TX_RX_fun, args=(sock,address_port))
         TX_RX_thread.start()
 
         # creez thread pentru trimiterea pachetelor
-        TX_TX_thread = threading.Thread(target=TX_TX_fun, args=(window,sock, address_port, file_name_to_send))
+        TX_TX_thread = threading.Thread(target=TX_TX_fun, args=(sock, address_port, file_name_to_send))
         TX_TX_thread.start()
 
         # astept ca cele 2 threaduri sa-si fi terminat executia
@@ -270,7 +94,8 @@ def tahoe_congestion_control(window,sock, address_port, file_name_to_send):
         TX_TX_thread.join()
         last_ack_of_file_final = last_ack_of_file
     else:
-        ConsoleAppendText(window,'Am primit ack gresit pentru pachetul de START !\nReincercati conexiunea\n',0)
+        print('Am primit ack gresit pentru pachetul de START')
+        print('Reincercati conexiunea\n')
 
 
 def segments_to_list(file_name_to_send):
@@ -283,24 +108,22 @@ def segments_to_list(file_name_to_send):
 
 
 
-def TX_RX_fun(window,sock,address_port):
+def TX_RX_fun(sock, address_port):
     global timers_queue
     global segments_in_pipe
     global lock
     global sending_done
     global last_ack_of_file
     global last_ack_received
-    global number_ack_duplicate
     global flag_retransmit
 
-
-    ConsoleAppendText(window,"TX_read_ack thread started",1)
+    print("TX_read_ack thread started")
 
     number_ack_duplicate = 0
     last_ack_received += 1  # ack = 2 este pentru pachetul de start (are segment number = 1)
     # mai trebuie sa merg niste iteratii cand sending_done, abia am trimis pachetul end, nu am primit ack de la el
     while sending_done == False or (last_ack_received != last_ack_of_file + 1):
-        data, addr = sock.recvfrom(DEFAULT_SIZE)  # functie blocanta
+        data, addr = sock.recvfrom(MSS)  # functie blocanta
         ack_received = int.from_bytes(data, byteorder='big', signed=False)   # segment_number este fix data
         #print('last ack received=  {}...'.format(last_ack_received))
         #print('A fost receptionat segment_number = {}... \n'.format(ack_received))
@@ -309,35 +132,39 @@ def TX_RX_fun(window,sock,address_port):
         segments_in_pipe = segments_in_pipe - 1
         lock.release()
 
+        print(f"RX: ack received : last_ack_received {ack_received}  {last_ack_received}")
         if ack_received == last_ack_received + 1:  # am primit un ack bun
-            ConsoleAppendText(window,f"Pachetul {ack_received} a fost primit cu succes!!!",0)
             last_ack_received += 1
-            lock.acquire()
-            timer = timers_queue.pop(0)
-            lock.release()
 
-            timer.cancel()
+            lock.acquire()
+            try:
+                timer = timers_queue.pop(0)
+                timer.cancel()
+            except :
+                pass
+            lock.release()
 
             number_ack_duplicate = 0
             packet_received()
 
         else:   # am primit acelasi ack
-            ConsoleAppendText(window,f'--RX: Ack primit {ack_received} este duplicat...',1)
+            print('--RX: Ack primit este duplicat...')
             number_ack_duplicate = number_ack_duplicate + 1
             if 3 == number_ack_duplicate:
                 number_ack_duplicate = 0
-                if flag_retransmit == False :
+                if not flag_retransmit:
                     flag_retransmit = True
-                    ConsoleAppendText(window,f'--- RX : 3 ack duplicate {ack_received} !!!',1)
-                    ConsoleAppendText(window,f'--- RX : Retransmitem pachetul {ack_received} !!!',0)
-                    packet_dropped(sock, address_port)
+                    print(f'--- 3 ack duplicate!!!')
+                    packet_dropped()
 
     sending_done = False
-    ConsoleAppendText(window,'TX_RX_done',0)
+    print('TX_RX_done')
 
 
 
-def TX_TX_fun(window,sock, address_port, file_name_to_send):
+
+
+def TX_TX_fun(sock, address_port, file_name_to_send):
     global timers_queue
     global segments_in_pipe
     global lock
@@ -347,40 +174,28 @@ def TX_TX_fun(window,sock, address_port, file_name_to_send):
     global last_ack_received
     global last_ack_of_file_final
 
-    ConsoleAppendText(window,f"TX_send thread started sending_done = {sending_done}",0)
+    print(f"TX_send thread started sending_done = {sending_done}")
     list_of_bytes = segments_to_list(file_name_to_send)
-
-    filesize = os.path.getsize(file_name_to_send)
-    ConsoleAppendText(window,'Filesize = {} Bytes'.format(filesize),0)
-    number_of_chunks = round(filesize/DEFAULT_SIZE)
-    ConsoleAppendText(window,'Number of chunks = {} '.format(number_of_chunks),0)
-
 
     i = 0
     while i < len(list_of_bytes) or segments_in_pipe != 0:
-
         # daca pipe-ul e plin
-
         # de implementat: porneste un TIMER sa nu astepte la infinit
 
         while segments_in_pipe >= cwnd and flag_retransmit == False:
-            ConsoleAppendText(window,"TX: pipeline is full",1)
-            time.sleep(0.25)
-        # while retransmit_thread.is_alive() == True:
-        #    retransmit_thread.join()
-
-
-        #time.sleep(0.5)
-        #asteapta un ack
+            print("TX: pipeline is full")
+            time.sleep(0.2)
+            #asteapta un ack
         # else
         #   increamenteaza contor si trimite
+
         if i >= len(list_of_bytes):
             time.sleep(2)
-            if(segments_in_pipe == 0):
+            if segments_in_pipe == 0:
                 break
 
 
-        if flag_retransmit == True:
+        if (flag_retransmit == True):
             while len(timers_queue) > 0:
                 lock.acquire()
                 timer = timers_queue.pop(0)
@@ -398,10 +213,11 @@ def TX_TX_fun(window,sock, address_port, file_name_to_send):
             lock.release()
 
             i = last_ack_received - 2 - last_ack_of_file_final
-            ConsoleAppendText(window,f"Incep retransmisia cu segment_number = {last_ack_received}",1)
+            print(f"Incep retransmisia cu segment_number = {last_ack_received}")
 
             # !! retransmite pachete aici
             continue
+
 
         segment = list_of_bytes[i]
         tip = segment_decode(segment)['tip']
@@ -410,27 +226,24 @@ def TX_TX_fun(window,sock, address_port, file_name_to_send):
             sending_done = True
             lock.release()
             last_ack_of_file = segment_decode(segment)['ack']
-            ConsoleAppendText(window,f'TX: last_ack_of_file = {last_ack_of_file }\n',0)
-
-        lock.acquire()
-        segments_in_pipe = segments_in_pipe + 1
-        lock.release()
+            print(f'TX: last_ack_of_file = {last_ack_of_file }\n')
 
         # creez si pornesc timer
-
-        timer = threading.Timer(TIME_TO_WAIT, lambda : packet_dropped(sock,address_port), args=None, kwargs=None)
+        timer = threading.Timer(TIME_TO_WAIT, lambda : packet_dropped(), args=None, kwargs=None)
         timer.start()
 
         lock.acquire()
         timers_queue.append(timer)
         lock.release()
 
+        lock.acquire()
+        segments_in_pipe = segments_in_pipe + 1
+        lock.release()
 
         sock.sendto(segment, address_port)
 
         segment_number = segment_decode(segment)['ack']
-        ConsoleAppendText(window,f'TX:Sent segment_number = {segment_number}',1)
+        print(f'TX:Sent segment_number = {segment_number}')
 
         i += 1
 
-    time.sleep(1)
